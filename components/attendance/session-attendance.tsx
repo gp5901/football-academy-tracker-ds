@@ -1,271 +1,390 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useRef } from "react"
-import { Card, CardContent } from "@/components/ui/card"
+import { useState, useEffect } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Camera, Save, UserCheck, UserX, Gift, ImageIcon, AlertTriangle } from "lucide-react"
-import type { Session, Player, AttendanceRecord } from "@/app/page"
+import { sessionService } from "@/lib/session-service"
+import { playerService } from "@/lib/player-service"
+import type { Session, AttendanceRecord } from "@/types/session"
+import type { PlayerWithStats } from "@/types/player"
+import { CheckCircle, XCircle, Gift, Users, Clock } from "lucide-react"
 
 interface SessionAttendanceProps {
-  session: Session
-  players: Player[]
-  existingRecords: AttendanceRecord[]
-  onAttendanceUpdate: (records: AttendanceRecord[]) => void
+  ageGroup: string
+  onAttendanceMarked?: () => void
 }
 
-export function SessionAttendance({ session, players, existingRecords, onAttendanceUpdate }: SessionAttendanceProps) {
-  const [attendanceData, setAttendanceData] = useState<
-    Record<string, { status: "present-regular" | "present-complimentary" | "absent"; notes: string }>
-  >({})
-  const [sessionPhoto, setSessionPhoto] = useState<string>("")
+interface AttendanceState {
+  [playerId: string]: {
+    status: "present_regular" | "present_complimentary" | "absent"
+    notes: string
+  }
+}
+
+export function SessionAttendance({ ageGroup, onAttendanceMarked }: SessionAttendanceProps) {
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null)
+  const [players, setPlayers] = useState<PlayerWithStats[]>([])
+  const [attendanceState, setAttendanceState] = useState<AttendanceState>({})
+  const [existingAttendance, setExistingAttendance] = useState<AttendanceRecord[]>([])
+  const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
 
-  // Check if attendance already recorded for this session
-  const isAlreadyRecorded = existingRecords.some((record) => record.sessionId === session.id)
+  useEffect(() => {
+    loadData()
+  }, [ageGroup])
 
-  const handleStatusChange = (playerId: string, status: "present-regular" | "present-complimentary" | "absent") => {
-    setAttendanceData((prev) => ({
+  useEffect(() => {
+    if (selectedSession) {
+      loadSessionAttendance(selectedSession.id)
+    }
+  }, [selectedSession])
+
+  const loadData = async () => {
+    setIsLoading(true)
+    try {
+      const [sessionsData, playersData] = await Promise.all([
+        sessionService.getTodaysSessions(ageGroup),
+        playerService.getPlayers(ageGroup),
+      ])
+
+      setSessions(sessionsData)
+
+      // Auto-select first incomplete session
+      const incompleteSession = sessionsData.find((s) => s.status !== "completed")
+      if (incompleteSession) {
+        setSelectedSession(incompleteSession)
+      }
+
+      // Load players with stats
+      const playersWithStats = await Promise.all(
+        playersData.map(async (player) => {
+          const playerStats = await playerService.getPlayerWithStats(player.id)
+          return (
+            playerStats || {
+              ...player,
+              totalSessionsAttended: 0,
+              regularSessionsUsed: 0,
+              complimentarySessionsUsed: 0,
+              remainingSessions: player.bookedSessions,
+              attendanceRate: 0,
+            }
+          )
+        }),
+      )
+      setPlayers(playersWithStats)
+    } catch (error) {
+      console.error("Error loading data:", error)
+      setMessage({ type: "error", text: "Failed to load session data" })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const loadSessionAttendance = async (sessionId: string) => {
+    try {
+      const sessionWithAttendance = await sessionService.getSessionWithAttendance(sessionId)
+
+      if (sessionWithAttendance) {
+        setExistingAttendance(sessionWithAttendance.attendance)
+
+        // Pre-populate attendance state with existing records
+        const initialState: AttendanceState = {}
+        sessionWithAttendance.attendance.forEach((record) => {
+          initialState[record.playerId] = {
+            status: record.status,
+            notes: record.notes || "",
+          }
+        })
+        setAttendanceState(initialState)
+      }
+    } catch (error) {
+      console.error("Error loading session attendance:", error)
+    }
+  }
+
+  const updateAttendance = (
+    playerId: string,
+    status: "present_regular" | "present_complimentary" | "absent",
+    notes = "",
+  ) => {
+    setAttendanceState((prev) => ({
       ...prev,
-      [playerId]: {
-        ...prev[playerId],
-        status,
-        notes: prev[playerId]?.notes || "",
-      },
+      [playerId]: { status, notes },
     }))
   }
 
-  const handleNotesChange = (playerId: string, notes: string) => {
-    setAttendanceData((prev) => ({
+  const updateNotes = (playerId: string, notes: string) => {
+    setAttendanceState((prev) => ({
       ...prev,
       [playerId]: {
         ...prev[playerId],
-        status: prev[playerId]?.status || "absent",
         notes,
       },
     }))
   }
 
-  const handlePhotoCapture = () => {
-    fileInputRef.current?.click()
-  }
+  const handleSubmit = async () => {
+    if (!selectedSession) return
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (file) {
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        setSessionPhoto(e.target?.result as string)
-      }
-      reader.readAsDataURL(file)
-    }
-  }
-
-  const handleSaveAttendance = async () => {
     setIsSaving(true)
+    setMessage(null)
 
-    const records: AttendanceRecord[] = players.map((player) => ({
-      id: `${session.id}-${player.id}-${Date.now()}`,
-      sessionId: session.id,
-      playerId: player.id,
-      status: attendanceData[player.id]?.status || "absent",
-      timestamp: new Date().toISOString(),
-      photo: sessionPhoto,
-      notes: attendanceData[player.id]?.notes || "",
-    }))
+    try {
+      const attendanceRecords = Object.entries(attendanceState).map(([playerId, data]) => ({
+        sessionId: selectedSession.id,
+        playerId,
+        status: data.status,
+        notes: data.notes,
+      }))
 
-    onAttendanceUpdate(records)
-    setAttendanceData({})
-    setSessionPhoto("")
-    setIsSaving(false)
-  }
+      await sessionService.markAttendance(selectedSession.id, attendanceRecords)
 
-  const getStatusColor = (status: "present-regular" | "present-complimentary" | "absent") => {
-    switch (status) {
-      case "present-regular":
-        return "bg-green-100 text-green-800 hover:bg-green-200"
-      case "present-complimentary":
-        return "bg-blue-100 text-blue-800 hover:bg-blue-200"
-      case "absent":
-        return "bg-red-100 text-red-800 hover:bg-red-200"
+      setMessage({ type: "success", text: "Attendance marked successfully!" })
+
+      // Refresh data
+      await loadData()
+      onAttendanceMarked?.()
+    } catch (error) {
+      console.error("Error marking attendance:", error)
+      setMessage({ type: "error", text: "Failed to mark attendance. Please try again." })
+    } finally {
+      setIsSaving(false)
     }
   }
 
-  const getStatusIcon = (status: "present-regular" | "present-complimentary" | "absent") => {
-    switch (status) {
-      case "present-regular":
-        return <UserCheck className="h-4 w-4" />
-      case "present-complimentary":
-        return <Gift className="h-4 w-4" />
-      case "absent":
-        return <UserX className="h-4 w-4" />
-    }
+  const getAttendanceStats = () => {
+    const records = Object.values(attendanceState)
+    const present = records.filter((r) => r.status === "present_regular" || r.status === "present_complimentary").length
+    const absent = records.filter((r) => r.status === "absent").length
+    const total = players.length
+
+    return { present, absent, total, unmarked: total - present - absent }
   }
 
-  const canUseComplimentary = (player: Player) => {
-    return player.complimentarySessions < player.maxComplimentary
-  }
+  const stats = getAttendanceStats()
 
-  const getPlayerWarnings = (player: Player) => {
-    const warnings = []
-    if (player.usedSessions >= player.bookedSessions) {
-      warnings.push("Booked sessions exceeded")
-    }
-    if (player.complimentarySessions >= player.maxComplimentary) {
-      warnings.push("Max complimentary sessions used")
-    }
-    return warnings
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center p-8">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p>Loading session data...</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
-    <div className="space-y-4">
-      {isAlreadyRecorded && (
-        <Alert>
-          <AlertTriangle className="h-4 w-4" />
-          <AlertDescription>
-            Attendance has already been recorded for this session. Recording again will create duplicate entries.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {/* Photo Section */}
+    <div className="space-y-6">
+      {/* Session Selection */}
       <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold">Session Photo</h3>
-            <Button variant="outline" onClick={handlePhotoCapture}>
-              <Camera className="h-4 w-4 mr-2" />
-              Take Photo
-            </Button>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-5 w-5" />
+            Select Session
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                className={`border rounded-lg p-4 cursor-pointer transition-colors ${
+                  selectedSession?.id === session.id
+                    ? "border-blue-500 bg-blue-50"
+                    : "border-gray-200 hover:border-gray-300"
+                }`}
+                onClick={() => setSelectedSession(session)}
+              >
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-semibold capitalize">{session.timeSlot} Session</h3>
+                  <Badge variant={session.status === "completed" ? "default" : "outline"}>
+                    {session.status === "completed" ? "Completed" : "Pending"}
+                  </Badge>
+                </div>
+                <p className="text-sm text-gray-600">{new Date(session.date).toLocaleDateString()}</p>
+              </div>
+            ))}
           </div>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-
-          {sessionPhoto && (
-            <div className="mt-4">
-              <img
-                src={sessionPhoto || "/placeholder.svg"}
-                alt="Session photo"
-                className="w-full max-w-md h-48 object-cover rounded-lg border"
-              />
-            </div>
-          )}
-
-          {!sessionPhoto && (
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-              <ImageIcon className="mx-auto h-12 w-12 text-gray-400 mb-2" />
-              <p className="text-gray-500">No photo captured yet</p>
-            </div>
-          )}
         </CardContent>
       </Card>
 
-      {/* Player Attendance */}
-      <div className="space-y-4">
-        {players.map((player) => {
-          const currentStatus = attendanceData[player.id]?.status || "absent"
-          const currentNotes = attendanceData[player.id]?.notes || ""
-          const warnings = getPlayerWarnings(player)
+      {selectedSession && (
+        <>
+          {/* Attendance Stats */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5" />
+                Attendance Overview - {selectedSession.timeSlot} Session
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-green-600">{stats.present}</div>
+                  <div className="text-sm text-gray-600">Present</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-red-600">{stats.absent}</div>
+                  <div className="text-sm text-gray-600">Absent</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-yellow-600">{stats.unmarked}</div>
+                  <div className="text-sm text-gray-600">Unmarked</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
+                  <div className="text-sm text-gray-600">Total Players</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
-          return (
-            <Card key={player.id}>
-              <CardContent className="pt-6">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-semibold text-lg">{player.name}</h3>
-                      <div className="flex items-center gap-2 mt-1">
-                        <Badge variant="secondary">
-                          Sessions: {player.usedSessions}/{player.bookedSessions}
-                        </Badge>
-                        <Badge variant="outline">
-                          Complimentary: {player.complimentarySessions}/{player.maxComplimentary}
-                        </Badge>
+          {/* Player Attendance */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Mark Attendance</CardTitle>
+              {existingAttendance.length > 0 && (
+                <Alert>
+                  <AlertDescription>
+                    This session already has attendance records. You can update them below.
+                  </AlertDescription>
+                </Alert>
+              )}
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {players.map((player) => {
+                  const currentStatus = attendanceState[player.id]?.status
+                  const currentNotes = attendanceState[player.id]?.notes || ""
+                  const canUseComplimentary = player.complimentarySessionsUsed < player.maxComplimentary
+
+                  return (
+                    <div key={player.id} className="border rounded-lg p-4 space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="font-semibold">{player.name}</h3>
+                          <div className="text-sm text-gray-600 space-y-1">
+                            <p>
+                              Regular sessions used: {player.regularSessionsUsed}/{player.bookedSessions}
+                            </p>
+                            <p>
+                              Complimentary used: {player.complimentarySessionsUsed}/{player.maxComplimentary}
+                            </p>
+                            <p>Attendance rate: {player.attendanceRate}%</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant={currentStatus === "present_regular" ? "default" : "outline"}
+                            onClick={() => updateAttendance(player.id, "present_regular")}
+                            disabled={player.remainingSessions <= 0}
+                            className="flex items-center gap-1"
+                          >
+                            <CheckCircle className="h-4 w-4" />
+                            Regular
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant={currentStatus === "present_complimentary" ? "default" : "outline"}
+                            onClick={() => updateAttendance(player.id, "present_complimentary")}
+                            disabled={!canUseComplimentary}
+                            className="flex items-center gap-1"
+                          >
+                            <Gift className="h-4 w-4" />
+                            Comp
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant={currentStatus === "absent" ? "destructive" : "outline"}
+                            onClick={() => updateAttendance(player.id, "absent")}
+                            className="flex items-center gap-1"
+                          >
+                            <XCircle className="h-4 w-4" />
+                            Absent
+                          </Button>
+                        </div>
                       </div>
-                      {warnings.length > 0 && (
-                        <div className="mt-2">
-                          {warnings.map((warning, index) => (
-                            <Badge key={index} variant="destructive" className="mr-1">
-                              <AlertTriangle className="h-3 w-3 mr-1" />
-                              {warning}
+
+                      {currentStatus && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">Status:</span>
+                            <Badge
+                              variant={
+                                currentStatus === "present_regular"
+                                  ? "default"
+                                  : currentStatus === "present_complimentary"
+                                    ? "secondary"
+                                    : "destructive"
+                              }
+                            >
+                              {currentStatus === "present_regular" && "Present (Regular)"}
+                              {currentStatus === "present_complimentary" && "Present (Complimentary)"}
+                              {currentStatus === "absent" && "Absent"}
                             </Badge>
-                          ))}
+                          </div>
+
+                          <Textarea
+                            placeholder="Add notes (optional)..."
+                            value={currentNotes}
+                            onChange={(e) => updateNotes(player.id, e.target.value)}
+                            className="text-sm"
+                            rows={2}
+                          />
                         </div>
                       )}
                     </div>
+                  )
+                })}
+              </div>
 
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={currentStatus === "present-regular" ? getStatusColor("present-regular") : ""}
-                        onClick={() => handleStatusChange(player.id, "present-regular")}
-                      >
-                        {getStatusIcon("present-regular")}
-                        <span className="ml-1">Present</span>
-                      </Button>
-
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={
-                          currentStatus === "present-complimentary" ? getStatusColor("present-complimentary") : ""
-                        }
-                        onClick={() => handleStatusChange(player.id, "present-complimentary")}
-                        disabled={!canUseComplimentary(player)}
-                      >
-                        {getStatusIcon("present-complimentary")}
-                        <span className="ml-1">Complimentary</span>
-                      </Button>
-
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={currentStatus === "absent" ? getStatusColor("absent") : ""}
-                        onClick={() => handleStatusChange(player.id, "absent")}
-                      >
-                        {getStatusIcon("absent")}
-                        <span className="ml-1">Absent</span>
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium mb-2 block">Notes (optional)</label>
-                    <Textarea
-                      placeholder="Add any notes about this player's attendance..."
-                      value={currentNotes}
-                      onChange={(e) => handleNotesChange(player.id, e.target.value)}
-                      className="resize-none"
-                      rows={2}
-                    />
-                  </div>
+              <div className="flex justify-between items-center mt-6 pt-4 border-t">
+                <div className="text-sm text-gray-600">
+                  {stats.present + stats.absent} of {stats.total} players marked
                 </div>
-              </CardContent>
-            </Card>
-          )
-        })}
-      </div>
 
-      {/* Save Button */}
-      <div className="flex justify-end pt-4">
-        <Button onClick={handleSaveAttendance} disabled={isSaving || players.length === 0} className="min-w-[150px]">
-          <Save className="mr-2 h-4 w-4" />
-          {isSaving ? "Saving..." : "Save Attendance"}
-        </Button>
-      </div>
+                <Button
+                  onClick={handleSubmit}
+                  disabled={isSaving || stats.unmarked > 0}
+                  className="flex items-center gap-2"
+                >
+                  {isSaving ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle className="h-4 w-4" />
+                      Mark Attendance
+                    </>
+                  )}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {message && (
+        <Alert className={message.type === "error" ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"}>
+          <AlertDescription className={message.type === "error" ? "text-red-800" : "text-green-800"}>
+            {message.text}
+          </AlertDescription>
+        </Alert>
+      )}
     </div>
   )
 }

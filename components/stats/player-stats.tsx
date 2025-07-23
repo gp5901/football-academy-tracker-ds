@@ -1,305 +1,148 @@
 "use client"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { TrendingUp, Award, AlertTriangle, Download, User, Calendar, Gift } from "lucide-react"
-import type { Player, AttendanceRecord, Coach } from "@/app/page"
+import type { PlayerWithStats } from "@/types/player"
+import { TrendingUp, Award, Target } from "lucide-react"
 
 interface PlayerStatsProps {
-  players: Player[]
-  attendanceRecords: AttendanceRecord[]
-  coach: Coach
+  players: PlayerWithStats[]
 }
 
-export function PlayerStats({ players, attendanceRecords, coach }: PlayerStatsProps) {
-  const getPlayerAttendanceRate = (player: Player) => {
-    const playerRecords = attendanceRecords.filter((r) => r.playerId === player.id)
-    const presentRecords = playerRecords.filter(
-      (r) => r.status === "present-regular" || r.status === "present-complimentary",
-    )
-    return playerRecords.length > 0 ? (presentRecords.length / playerRecords.length) * 100 : 0
+export function PlayerStats({ players }: PlayerStatsProps) {
+  const getTopPerformers = () => {
+    return players
+      .filter((p) => p.totalSessionsAttended > 0)
+      .sort((a, b) => b.attendanceRate - a.attendanceRate)
+      .slice(0, 5)
   }
 
-  const getPerformanceColor = (rate: number) => {
-    if (rate >= 90) return "text-green-600"
-    if (rate >= 75) return "text-yellow-600"
-    return "text-red-600"
-  }
-
-  const getPerformanceBadge = (rate: number) => {
-    if (rate >= 90) return <Badge className="bg-green-100 text-green-800">Excellent</Badge>
-    if (rate >= 75) return <Badge className="bg-yellow-100 text-yellow-800">Good</Badge>
-    return <Badge className="bg-red-100 text-red-800">Needs Attention</Badge>
-  }
-
-  // Update the CSV export to include training completion data
-  const exportToCSV = () => {
-    // Get current date in DD/MM/YYYY format
-    const currentDate = new Date().toLocaleDateString("en-GB")
-
-    // Calculate stats for each player
-    const csvData = players.map((player) => {
-      const playerRecords = attendanceRecords.filter((r) => r.playerId === player.id)
-      const presentRecords = playerRecords.filter(
-        (r) => r.status === "present-regular" || r.status === "present-complimentary",
-      )
-      const attendanceRate =
-        playerRecords.length > 0 ? Math.round((presentRecords.length / playerRecords.length) * 100) : 0
-      const remainingSessions = Math.max(0, player.bookedSessions - player.usedSessions)
-
-      // Determine status based on attendance rate
-      let status = "Needs Attention"
-      if (attendanceRate >= 90) status = "Excellent"
-      else if (attendanceRate >= 75) status = "Good"
-
+  const getOverallStats = () => {
+    if (players.length === 0) {
       return {
-        "Player Name": player.name,
-        "Age Group": player.ageGroup,
-        "Booked Sessions": player.bookedSessions,
-        "Attended Sessions": player.usedSessions,
-        "Attendance Rate (%)": attendanceRate,
-        "Complimentary Sessions Used": player.complimentarySessions,
-        "Remaining Sessions": remainingSessions,
-        "Training Completed": player.trainingCompleted || 0,
-        Status: status,
-        Notes: player.notes || "",
+        totalPlayers: 0,
+        averageAttendance: 0,
+        totalSessionsAttended: 0,
+        playersWithPerfectAttendance: 0,
       }
-    })
+    }
 
-    // Create CSV content with headers and data
-    const headers = [
-      "Player Name",
-      "Age Group",
-      "Booked Sessions",
-      "Attended Sessions",
-      "Attendance Rate (%)",
-      "Complimentary Sessions Used",
-      "Remaining Sessions",
-      "Training Completed",
-      "Status",
-      "Notes",
-    ]
+    const totalSessionsAttended = players.reduce((sum, p) => sum + p.totalSessionsAttended, 0)
+    const averageAttendance = players.reduce((sum, p) => sum + p.attendanceRate, 0) / players.length
+    const playersWithPerfectAttendance = players.filter((p) => p.attendanceRate === 100).length
 
-    const csvRows = [
-      headers.join(","),
-      ...csvData.map((row) =>
-        Object.values(row)
-          .map((value) => (typeof value === "string" && value.includes(",") ? `"${value}"` : value))
-          .join(","),
-      ),
-      "", // Empty row
-      "", // Empty row
-      "", // Empty row
-      `Report generated on: ${currentDate}`,
-      "", // Empty row
-      `Coach: ${coach.username}`,
-      "", // Empty row
-      `Age Group: ${players.length > 0 ? players[0].ageGroup : "N/A"}`,
-      "", // Empty row
-      `Total Players: ${players.length}`,
-    ]
-
-    const csvContent = csvRows.join("\n")
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `attendance-report-${players[0]?.ageGroup || "unknown"}-${currentDate.replace(/\//g, "-")}.csv`
-    a.click()
-    window.URL.revokeObjectURL(url)
+    return {
+      totalPlayers: players.length,
+      averageAttendance: Math.round(averageAttendance * 100) / 100,
+      totalSessionsAttended,
+      playersWithPerfectAttendance,
+    }
   }
 
-  const sortedPlayers = [...players].sort((a, b) => getPlayerAttendanceRate(b) - getPlayerAttendanceRate(a))
-
-  const bestPerformer = sortedPlayers[0]
-  const worstPerformer = sortedPlayers[sortedPlayers.length - 1]
+  const topPerformers = getTopPerformers()
+  const stats = getOverallStats()
 
   return (
     <div className="space-y-6">
-      {/* Header with Export */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold">Player Statistics</h2>
-          <p className="text-muted-foreground">Track individual player performance and attendance</p>
-        </div>
-        <Button onClick={exportToCSV} variant="outline">
-          <Download className="h-4 w-4 mr-2" />
-          Export CSV
-        </Button>
-      </div>
-
-      {/* Performance Highlights */}
-      {bestPerformer && worstPerformer && players.length > 1 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Award className="h-5 w-5 text-yellow-500" />
-                Top Performer
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold">{bestPerformer.name}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {bestPerformer.usedSessions}/{bestPerformer.bookedSessions} sessions
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-2xl font-bold text-green-600">
-                    {getPlayerAttendanceRate(bestPerformer).toFixed(1)}%
-                  </p>
-                  {getPerformanceBadge(getPlayerAttendanceRate(bestPerformer))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <AlertTriangle className="h-5 w-5 text-red-500" />
-                Needs Attention
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold">{worstPerformer.name}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {worstPerformer.usedSessions}/{worstPerformer.bookedSessions} sessions
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-2xl font-bold text-red-600">
-                    {getPlayerAttendanceRate(worstPerformer).toFixed(1)}%
-                  </p>
-                  {getPerformanceBadge(getPlayerAttendanceRate(worstPerformer))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Individual Player Stats */}
+      {/* Overall Statistics */}
       <Card>
         <CardHeader>
-          <CardTitle>Individual Performance</CardTitle>
-          <CardDescription>Detailed breakdown for each player</CardDescription>
+          <CardTitle className="flex items-center gap-2">
+            <TrendingUp className="h-5 w-5" />
+            Overall Statistics
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          {players.length === 0 ? (
-            <div className="text-center py-8">
-              <User className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-              <p className="text-lg font-medium text-muted-foreground mb-2">No players found</p>
-              <p className="text-sm text-muted-foreground">Players will appear here once assigned to your age group</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-blue-600">{stats.totalPlayers}</div>
+              <div className="text-sm text-gray-600">Total Players</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-green-600">{stats.averageAttendance}%</div>
+              <div className="text-sm text-gray-600">Avg Attendance</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-purple-600">{stats.totalSessionsAttended}</div>
+              <div className="text-sm text-gray-600">Total Sessions</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-orange-600">{stats.playersWithPerfectAttendance}</div>
+              <div className="text-sm text-gray-600">Perfect Attendance</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Top Performers */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Award className="h-5 w-5" />
+            Top Performers
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {topPerformers.length > 0 ? (
+            <div className="space-y-4">
+              {topPerformers.map((player, index) => (
+                <div key={player.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-800 rounded-full font-bold text-sm">
+                      {index + 1}
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">{player.name}</h3>
+                      <p className="text-sm text-gray-600">{player.totalSessionsAttended} sessions attended</p>
+                    </div>
+                  </div>
+                  <Badge variant={player.attendanceRate === 100 ? "default" : "secondary"}>
+                    {player.attendanceRate}%
+                  </Badge>
+                </div>
+              ))}
             </div>
           ) : (
-            <div className="space-y-6">
-              {sortedPlayers.map((player) => {
-                const attendanceRate = getPlayerAttendanceRate(player)
-                const sessionProgress = (player.usedSessions / player.bookedSessions) * 100
-                const complimentaryProgress = (player.complimentarySessions / player.maxComplimentary) * 100
-
-                return (
-                  <div key={player.id} className="border rounded-lg p-6">
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
-                          {player.name
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")
-                            .toUpperCase()}
-                        </div>
-                        <div>
-                          <h3 className="font-semibold text-lg">{player.name}</h3>
-                          <p className="text-sm text-muted-foreground">
-                            Joined: {new Date(player.joinDate).toLocaleDateString()}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className={`text-2xl font-bold ${getPerformanceColor(attendanceRate)}`}>
-                          {attendanceRate.toFixed(1)}%
-                        </p>
-                        {getPerformanceBadge(attendanceRate)}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Calendar className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm font-medium">Regular Sessions</span>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-sm">
-                            <span>
-                              {player.usedSessions} / {player.bookedSessions}
-                            </span>
-                            <span>{sessionProgress.toFixed(0)}%</span>
-                          </div>
-                          <Progress value={sessionProgress} className="h-2" />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Gift className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm font-medium">Complimentary</span>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-sm">
-                            <span>
-                              {player.complimentarySessions} / {player.maxComplimentary}
-                            </span>
-                            <span>{complimentaryProgress.toFixed(0)}%</span>
-                          </div>
-                          <Progress value={complimentaryProgress} className="h-2" />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm font-medium">Attendance Rate</span>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-sm">
-                            <span>Overall Performance</span>
-                            <span>{attendanceRate.toFixed(1)}%</span>
-                          </div>
-                          <Progress value={attendanceRate} className="h-2" />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Warnings */}
-                    {(player.usedSessions >= player.bookedSessions ||
-                      player.complimentarySessions >= player.maxComplimentary) && (
-                      <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                        <div className="flex items-center gap-2 text-yellow-800">
-                          <AlertTriangle className="h-4 w-4" />
-                          <span className="text-sm font-medium">Attention Required</span>
-                        </div>
-                        <div className="mt-1 text-sm text-yellow-700">
-                          {player.usedSessions >= player.bookedSessions && <p>• Regular sessions limit reached</p>}
-                          {player.complimentarySessions >= player.maxComplimentary && (
-                            <p>• Maximum complimentary sessions used</p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+            <div className="text-center py-8 text-gray-500">
+              <Award className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+              <p>No attendance data available yet</p>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Player Progress */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Target className="h-5 w-5" />
+            Player Progress
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {players.map((player) => (
+              <div key={player.id} className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="font-medium">{player.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-600">
+                      {player.regularSessionsUsed}/{player.bookedSessions}
+                    </span>
+                    <Badge variant="outline" className="text-xs">
+                      {player.attendanceRate}%
+                    </Badge>
+                  </div>
+                </div>
+                <Progress value={(player.regularSessionsUsed / player.bookedSessions) * 100} className="h-2" />
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>Sessions Used</span>
+                  <span>{player.remainingSessions} remaining</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>
